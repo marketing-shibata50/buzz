@@ -1,0 +1,53 @@
+# 手書き（PunkRecord の自動生成ではない）
+# block/buzz の fork を評価目的でローカル起動するための構成。
+# ブラウザ確認時のポートは「このファイルが唯一の一次情報源」。推測で番号を決めないこと。
+project:
+  title: "buzz (block/buzz fork) — 評価用"
+  repository: buzz
+  repo_url: https://github.com/marketing-shibata50/buzz.git
+  upstream_url: https://github.com/block/buzz.git
+  category: 評価
+  status: evaluating
+
+services:
+  relay:
+    port: 3000
+    framework: "Rust / axum (buzz-relay)"
+    url: "ws://localhost:3000"
+    health_port: 8080
+    note: "admin ダッシュボードは just admin で起動した場合のみ。just relay だけでは /reports は 404"
+  web:
+    port: 53491
+    framework: "Vite (just web)"
+    url: "http://localhost:53491"
+    note: "Justfile が VITE_PORT = BUZZ_VITE_PORT + 100 で導出。BUZZ_VITE_PORT はワークツリーのパスのsha256から決まる（/home/shibata/buzz → 53391）"
+  desktop_vite:
+    port: 53391
+    framework: "Vite (Tauri devUrl)"
+    url: "http://localhost:53391"
+    note: "デスクトップアプリ用。ai-server は headless なので通常は使わない"
+  database:
+    port: 5432
+    type: "postgres 17"
+    host: "localhost"
+  redis:
+    port: 6379
+    url: "redis://localhost:6379"
+  adminer:
+    port: 8082
+    url: "http://localhost:8082"
+  keycloak:
+    port: 8180
+    url: "http://localhost:8180"
+  minio:
+    port: 9000
+    console_port: 9001
+    url: "http://localhost:9001"
+  prometheus:
+    port: 9090
+    url: "http://localhost:9090"
+
+# Mac から確認する時（0.0.0.0 bind もファイアウォール開放もしない）
+tunnel:
+  - "ssh -N -L 3000:127.0.0.1:3000 ai-server"
+  - "ssh -N -L 53491:127.0.0.1:53491 ai-server"
