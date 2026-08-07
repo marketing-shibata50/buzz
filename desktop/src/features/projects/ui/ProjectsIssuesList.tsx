@@ -4,16 +4,18 @@ import type {
   Project,
   ProjectIssue,
   ProjectIssueListItem,
+  Repository,
 } from "@/features/projects/hooks";
+import { relativeTime } from "@/features/projects/lib/projectsViewHelpers";
 import type { ProjectWorkItemSection } from "@/features/projects/projectWorkItems";
 import {
   resolveUserLabel,
   type UserProfileLookup,
 } from "@/features/profile/lib/identity";
-import { UserProfilePopover } from "@/features/profile/ui/UserProfilePopover";
 import { Button } from "@/shared/ui/button";
 import { Card } from "@/shared/ui/card";
 import { DropdownMenuItem } from "@/shared/ui/dropdown-menu";
+import { ProjectAuthorIdentity } from "./ProjectAuthorIdentity";
 import { ProjectEventTypeIcon } from "./ProjectEventTypeIcon";
 import { ProjectListRowMenu } from "./ProjectListRowMenu";
 import { ProjectsWorkItemsLoadNotice } from "./ProjectsWorkItemsLoadNotice";
@@ -33,31 +35,16 @@ type ProjectsIssuesListProps = {
   failedSections: ProjectWorkItemSection[];
   isLoading: boolean;
   isRetrying: boolean;
-  onOpen: (project: Project, issue: ProjectIssue) => void;
+  onOpen: (
+    project: Project,
+    repository: Repository,
+    issue: ProjectIssue,
+  ) => void;
   onRetry: () => void;
   profiles?: UserProfileLookup;
   issues: ProjectIssueListItem[];
   viewMode: "grid" | "list";
 };
-
-function formatRelativeTime(createdAt: number) {
-  const elapsedSeconds = Math.max(
-    1,
-    Math.floor(Date.now() / 1_000 - createdAt),
-  );
-  const units = [
-    { label: "year", seconds: 365 * 24 * 60 * 60 },
-    { label: "month", seconds: 30 * 24 * 60 * 60 },
-    { label: "day", seconds: 24 * 60 * 60 },
-    { label: "hour", seconds: 60 * 60 },
-    { label: "minute", seconds: 60 },
-  ];
-  const unit =
-    units.find((item) => elapsedSeconds >= item.seconds) ??
-    units[units.length - 1];
-  const value = Math.max(1, Math.floor(elapsedSeconds / unit.seconds));
-  return `${value} ${unit.label}${value === 1 ? "" : "s"} ago`;
-}
 
 function nextStepLabel(status: ProjectIssue["status"]) {
   if (status === "Done" || status === "Closed") return "View issue";
@@ -67,11 +54,13 @@ function nextStepLabel(status: ProjectIssue["status"]) {
 }
 
 function IssueHeader({
+  authorTestId,
   includeDate = true,
   issue,
   profiles,
   project,
 }: {
+  authorTestId?: string;
   includeDate?: boolean;
   issue: ProjectIssue;
   profiles?: UserProfileLookup;
@@ -86,18 +75,14 @@ function IssueHeader({
       </div>
       <p className={`truncate ${PROJECT_LIST_ROW_SUBTEXT_CLASS}`}>
         {project.name}
-        {includeDate
-          ? ` · created ${formatRelativeTime(issue.createdAt)}`
-          : null}{" "}
-        · by{" "}
-        <UserProfilePopover pubkey={issue.author} triggerElement="span">
-          <button
-            className="relative z-10 rounded-sm hover:underline focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
-            type="button"
-          >
-            {authorLabel}
-          </button>
-        </UserProfilePopover>
+        {includeDate ? ` · created ${relativeTime(issue.createdAt)}` : null} ·
+        by{" "}
+        <ProjectAuthorIdentity
+          label={authorLabel}
+          profiles={profiles}
+          pubkey={issue.author}
+          testId={authorTestId}
+        />
         {includeDate ? (
           ` · ${issue.status}`
         ) : (
@@ -123,7 +108,10 @@ function IssueGridCard({
   project: Project;
 }) {
   return (
-    <Card className="group relative flex min-h-40 flex-col overflow-hidden border-border/60 bg-card p-4 shadow-none transition-colors duration-150 hover:bg-muted/20">
+    <Card
+      className="group relative flex min-h-40 flex-col overflow-hidden border-border/60 bg-transparent p-4 shadow-none transition-colors duration-150 hover:bg-muted/20"
+      data-projects-grid-card
+    >
       <button
         className="absolute inset-0"
         onClick={() => onOpen(project, issue)}
@@ -199,6 +187,7 @@ function IssueListRow({
       <div className={PROJECT_LIST_ROW_CONTENT_CLASS}>
         <ProjectEventTypeIcon className="h-5 w-5" kind="issue" />
         <IssueHeader
+          authorTestId="projects-issue-author"
           includeDate={false}
           issue={issue}
           profiles={profiles}
@@ -219,7 +208,7 @@ function IssueListRow({
             data-testid="projects-row-date"
             title={new Date(issue.createdAt * 1_000).toLocaleString()}
           >
-            {formatRelativeTime(issue.createdAt)}
+            {relativeTime(issue.createdAt)}
           </span>
           <ProjectListRowMenu label={`More options for ${issue.title}`}>
             <DropdownMenuItem onSelect={() => onOpen(project, issue)}>
@@ -282,11 +271,13 @@ export function ProjectsIssuesList({
       <div className="space-y-3">
         {loadNotice}
         <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-          {issues.map(({ project, issue }) => (
+          {issues.map(({ project, issue, repository }) => (
             <IssueGridCard
               issue={issue}
-              key={issue.id}
-              onOpen={onOpen}
+              key={`${repository.id}:${issue.id}`}
+              onOpen={(selectedProject, selectedIssue) =>
+                onOpen(selectedProject, repository, selectedIssue)
+              }
               profiles={profiles}
               project={project}
             />
@@ -299,12 +290,17 @@ export function ProjectsIssuesList({
   return (
     <div className="space-y-3">
       {loadNotice}
-      <div className={PROJECT_LIST_CONTAINER_CLASS}>
-        {issues.map(({ project, issue }) => (
+      <div
+        className={PROJECT_LIST_CONTAINER_CLASS}
+        data-testid="projects-list-container"
+      >
+        {issues.map(({ project, issue, repository }) => (
           <IssueListRow
             issue={issue}
-            key={issue.id}
-            onOpen={onOpen}
+            key={`${repository.id}:${issue.id}`}
+            onOpen={(selectedProject, selectedIssue) =>
+              onOpen(selectedProject, repository, selectedIssue)
+            }
             profiles={profiles}
             project={project}
           />

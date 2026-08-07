@@ -6,6 +6,8 @@ const COMMUNITIES_KEY = "buzz-communities";
 const ACTIVE_COMMUNITY_KEY = "buzz-active-community-id";
 const LEGACY_WORKSPACES_KEY = "buzz-workspaces";
 const LEGACY_ACTIVE_WORKSPACE_KEY = "buzz-active-workspace-id";
+const COMMUNITY_DISCOVERY_AFTER_LEAVE_KEY =
+  "buzz-community-discovery-after-leave";
 
 /**
  * Expand a leading `~` to the user's home directory. The backend rejects
@@ -57,6 +59,9 @@ export function loadCommunities(): Community[] {
     if (!Array.isArray(parsed)) {
       return [];
     }
+    if (parsed.length > 0) {
+      localStorage.removeItem(COMMUNITY_DISCOVERY_AFTER_LEAVE_KEY);
+    }
     // Migration: older builds stored the user's `nsec` in localStorage and
     // re-applied it to the backend on every reload, which silently overwrote
     // any `import_identity` result with the original generated key. The
@@ -81,8 +86,38 @@ export function loadCommunities(): Community[] {
   }
 }
 
-export function saveCommunities(communities: Community[]): void {
-  setLocalStorageItemWithRecovery(COMMUNITIES_KEY, JSON.stringify(communities));
+export function saveCommunities(communities: Community[]): boolean {
+  const didSave = setLocalStorageItemWithRecovery(
+    COMMUNITIES_KEY,
+    JSON.stringify(communities),
+  );
+  if (didSave && communities.length > 0) {
+    localStorage.removeItem(COMMUNITY_DISCOVERY_AFTER_LEAVE_KEY);
+  }
+  return didSave;
+}
+
+export function loadCommunityDiscoveryAfterLeave(
+  storage: Storage = localStorage,
+): boolean {
+  return storage.getItem(COMMUNITY_DISCOVERY_AFTER_LEAVE_KEY) === "1";
+}
+
+export function markCommunityDiscoveryAfterLeave(
+  storage: Storage = localStorage,
+): boolean {
+  if (typeof window !== "undefined" && storage === window.localStorage) {
+    return setLocalStorageItemWithRecovery(
+      COMMUNITY_DISCOVERY_AFTER_LEAVE_KEY,
+      "1",
+    );
+  }
+  try {
+    storage.setItem(COMMUNITY_DISCOVERY_AFTER_LEAVE_KEY, "1");
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function clearCommunityStorage(storage: Storage = localStorage): void {
@@ -97,8 +132,8 @@ export function loadActiveCommunityId(): string | null {
   return localStorage.getItem(ACTIVE_COMMUNITY_KEY);
 }
 
-export function saveActiveCommunityId(id: string): void {
-  setLocalStorageItemWithRecovery(ACTIVE_COMMUNITY_KEY, id);
+export function saveActiveCommunityId(id: string): boolean {
+  return setLocalStorageItemWithRecovery(ACTIVE_COMMUNITY_KEY, id);
 }
 
 export function normalizeRelayUrl(url: string): string {
@@ -108,13 +143,29 @@ export function normalizeRelayUrl(url: string): string {
   return url;
 }
 
+function isLocalRelayHost(hostname: string): boolean {
+  return ["localhost", "127.0.0.1", "[::1]", "0.0.0.0"].includes(hostname);
+}
+
+export function shouldAutoConnectDefaultRelay(relayUrl: string): boolean {
+  try {
+    const parsed = new URL(relayUrl);
+    return (
+      (parsed.protocol === "ws:" || parsed.protocol === "wss:") &&
+      !isLocalRelayHost(parsed.hostname)
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function deriveCommunityName(relayUrl: string): string {
   try {
     const url = new URL(
       relayUrl.replace("ws://", "http://").replace("wss://", "https://"),
     );
     const host = url.hostname;
-    if (host === "localhost" || host === "127.0.0.1") {
+    if (isLocalRelayHost(host)) {
       return "Local Dev";
     }
     const parts = host.split(".");
@@ -136,17 +187,40 @@ export function initFirstCommunity(
   relayUrl: string,
   pubkey: string,
   name?: string,
-): Community {
+): Community | null {
   const normalizedUrl = normalizeRelayUrl(relayUrl);
   const trimmedName = name?.trim();
   const community: Community = {
     id: crypto.randomUUID(),
     name: trimmedName || deriveCommunityName(normalizedUrl),
     relayUrl: normalizedUrl,
+    // Compiled default relays must admit the first token-less connection; there
+    // is no invite-token prompt on this auto-connect path.
     pubkey,
     addedAt: new Date().toISOString(),
   };
-  saveCommunities([community]);
-  saveActiveCommunityId(community.id);
+  const previousActiveCommunityId = localStorage.getItem(ACTIVE_COMMUNITY_KEY);
+  const didSaveActiveCommunity = saveActiveCommunityId(community.id);
+  if (!didSaveActiveCommunity) {
+    return null;
+  }
+
+  if (!saveCommunities([community])) {
+    // A failed setItem leaves the existing communities value untouched. Roll
+    // back only the active-ID write so inconsistent pre-existing data is never
+    // destroyed while recovering from a quota failure.
+    try {
+      if (previousActiveCommunityId === null) {
+        localStorage.removeItem(ACTIVE_COMMUNITY_KEY);
+      } else {
+        localStorage.setItem(ACTIVE_COMMUNITY_KEY, previousActiveCommunityId);
+      }
+    } catch {
+      // Best effort: persistence is already unavailable, and callers will stay
+      // on setup instead of reloading.
+    }
+    return null;
+  }
+
   return community;
 }

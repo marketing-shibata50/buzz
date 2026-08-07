@@ -26,9 +26,11 @@ import { normalizePubkey } from "@/shared/lib/pubkey";
 import {
   deleteManagedAgentWithRules,
   isManagedAgentActive,
+  respawnManagedAgentWithRules,
   startManagedAgentWithRules,
   stopManagedAgentWithRules,
 } from "../lib/managedAgentControlActions";
+import { clearActiveTurnsForAgentOnStop } from "../managedAgentRuntimeHooks";
 import {
   availableRuntimesForStart,
   buildInstanceInputForDefinition,
@@ -56,6 +58,9 @@ export function useManagedAgentActions() {
     ReadonlySet<string>
   >(() => new Set());
   const startingPersonaIdsRef = React.useRef(new Set<string>());
+  const [restartingAgentPubkey, setRestartingAgentPubkey] = React.useState<
+    string | null
+  >(null);
   const [logAgentPubkey, setLogAgentPubkey] = React.useState<string | null>(
     null,
   );
@@ -173,6 +178,30 @@ export function useManagedAgentActions() {
     }
   }
 
+  async function handleRestart(pubkey: string) {
+    if (restartingAgentPubkey) return;
+    clearFeedback();
+    setRestartingAgentPubkey(pubkey);
+    try {
+      const agent = managedAgents.find(
+        (candidate) => candidate.pubkey === pubkey,
+      );
+      if (!agent) return;
+      await respawnManagedAgentWithRules({
+        agent,
+        startManagedAgent: startMutation.mutateAsync,
+        stopManagedAgent: stopMutation.mutateAsync,
+        onStopped: () => clearActiveTurnsForAgentOnStop(agent.pubkey),
+      });
+    } catch (error) {
+      setActionErrorMessage(
+        error instanceof Error ? error.message : "Failed to restart agent.",
+      );
+    } finally {
+      setRestartingAgentPubkey(null);
+    }
+  }
+
   function setPersonaStartPending(personaId: string, pending: boolean) {
     const next = new Set(startingPersonaIdsRef.current);
     if (pending) {
@@ -248,6 +277,9 @@ export function useManagedAgentActions() {
         relayAgents: relayAgentsQuery.data ?? [],
         stopManagedAgent: stopMutation.mutateAsync,
       });
+      if (agent.backend.type === "local") {
+        clearActiveTurnsForAgentOnStop(pubkey);
+      }
       if (result.noticeMessage) {
         setActionNoticeMessage(result.noticeMessage);
       }
@@ -368,17 +400,22 @@ export function useManagedAgentActions() {
       managedAgents.filter((a) => isManagedAgentActive(a)),
       "Stop",
       "stop",
-      (a) =>
-        stopManagedAgentWithRules({
+      async (a) => {
+        await stopManagedAgentWithRules({
           agent: a,
           channels: channelsQuery.data ?? [],
           relayAgents: relayAgentsQuery.data ?? [],
           stopManagedAgent: stopMutation.mutateAsync,
-        }),
+        });
+        if (a.backend.type === "local") {
+          clearActiveTurnsForAgentOnStop(a.pubkey);
+        }
+      },
     );
   }
 
   const isPending =
+    restartingAgentPubkey !== null ||
     createAgentMutation.isPending ||
     startMutation.isPending ||
     stopMutation.isPending ||
@@ -412,8 +449,10 @@ export function useManagedAgentActions() {
     actionErrorMessage,
     setActionErrorMessage,
     startingAgentPubkey,
+    restartingAgentPubkey,
     startingPersonaIds,
     handleStart,
+    handleRestart,
     handleStartPersona,
     handleStop,
     handleDelete,
