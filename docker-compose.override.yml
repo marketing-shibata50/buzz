@@ -1,0 +1,59 @@
+# ローカル環境 (ai-server-mk2) 固有の上書き設定。
+# docker compose は docker-compose.yml と本ファイルを自動でマージするため、
+# upstream の docker-compose.yml に手を入れずに差分を当てられる。
+#
+# 経緯:
+#   2026-08-07、buzz-keycloak が起動直後に OOM kill (Exited 137) されて停止した。
+#   カーネルログ:
+#     oom-kill:constraint=CONSTRAINT_MEMCG ... task=java
+#     Killed process (java) anon-rss:504092kB
+#   anon-rss ≒ 492MB が upstream の limits.memory: 512m にほぼ一致しており、
+#   コンテナ上限に当たって kill されていた。ホストのメモリ不足ではない
+#   (mk2 は 30GB 搭載、当時も 20GB 以上空きがあった)。
+#
+#   keycloak 26.0 は Java 実行基盤で、start-dev でも 512MB は起動要件に足りない。
+#   2g に引き上げて余裕を持たせる。ホスト 30GB に対して十分小さい。
+#   2026-08-19 追記: 上限を 2g にして再開したところ OOM は解消した
+#   (RestartCount=0 / OOMKilled=false / 実測 861MiB)。ただし別の故障が露見した。
+#
+#   upstream は KC_DB: dev-mem = H2 インメモリDB を使っている。keycloak 自体は
+#   08:18:20 に正常起動する (changeset 148 適用、master realm 初期化、admin 作成)
+#   のに、15分後の 08:33:20 から全テーブルが消えて
+#     Table "REALM" not found (this database is empty)
+#   となり HTTP 500 / healthcheck unhealthy に落ちる。H2 インメモリは接続が
+#   閉じるとDBごと揮発するため、アイドル後に中身が消えていた。
+#   OOM とは無関係で、停止前から潜在していた構成上の欠陥。
+#
+#   対処: 既に稼働している buzz-postgres 上に専用DB `keycloak` を作成し
+#   (アプリ本体の `buzz` DB とは分離)、そこへ永続化する。
+#   start-dev は H2 を強制するので `start --optimized` 相当の `start` に変更し、
+#   dev 用途のため --hostname-strict=false / --http-enabled=true を付ける。
+services:
+  keycloak:
+    command: start --http-port=8080 --http-enabled=true --hostname-strict=false
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
+      KC_DB_USERNAME: buzz
+      KC_DB_PASSWORD: buzz_dev
+      KC_HEALTH_ENABLED: "true"
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # start-dev では /health/* が 8080 に同居していたが、prod profile の `start`
+    # では management interface (9000) に分離される。upstream の healthcheck は
+    # 8080 を見ており 404 → 永久 unhealthy になるため、9000 に向け直す。
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - "exec 3<>/dev/tcp/localhost/9000 && echo -e 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && cat <&3 | grep -q '200 OK'"
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: 2g
